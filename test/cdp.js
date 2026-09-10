@@ -26,7 +26,11 @@ function httpJSON(port, path) {
 }
 
 /** Open a CDP session against the first page whose URL contains `match`. */
-async function connect({ port = 9222, match = "", timeout = 20000 } = {}) {
+async function connect({
+  port = Number(process.env.OMARCHY_TYPE_DEBUG_PORT) || 9222,
+  match = process.env.OMARCHY_TYPE_PORT || "8421",
+  timeout = 20000,
+} = {}) {
   const targets = await httpJSON(port, "/json/list");
   const target = targets.find(
     (t) => t.type === "page" && t.url.includes(match) && t.webSocketDebuggerUrl);

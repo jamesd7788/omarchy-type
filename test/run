@@ -64,7 +64,12 @@ for _ in $(seq 60); do
   curl -sf --max-time 1 "http://127.0.0.1:$DEBUG_PORT/json/list" >/dev/null 2>&1 && break
   sleep 0.25
 done
+curl -sf --max-time 1 "http://127.0.0.1:$DEBUG_PORT/json/list" >/dev/null 2>&1 || {
+  echo "test: $BROWSER did not expose a debug port on $DEBUG_PORT" >&2; exit 1; }
 sleep 2
+
+# The checks read both ports from the environment.
+export OMARCHY_TYPE_PORT="$PORT" OMARCHY_TYPE_DEBUG_PORT="$DEBUG_PORT"
 
 if [[ $# -gt 0 ]]; then
   CHECKS=("$TEST/$1.js")

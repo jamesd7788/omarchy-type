@@ -5,15 +5,15 @@
  * the ink is a constant fraction of the font, the underscore spans exactly
  * one character cell, and three lines stay visible.
  *
- *   node test/width-sweep.js            (needs the app running on 8421 and
- *                                        chromium on 9222 -- see test/run)
+ *   node test/width-sweep.js            (via test/run, which starts both
+ *                                        the app and the browser for you)
  */
 const { connect, sleep, results } = require("./cdp");
 
 const WIDTHS = [1400, 1100, 900, 760, 680, 560, 480, 400, 360];
 
 (async () => {
-  const page = await connect({ match: "8421" });
+  const page = await connect();
   const r = results();
   const rows = [];
 

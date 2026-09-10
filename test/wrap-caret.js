@@ -4,8 +4,8 @@
  * shrinking -- so the caret has to land correctly on the second and third
  * lines, and follow a resize that reflows the text mid-test.
  *
- *   node test/wrap-caret.js             (needs the app running on 8421 and
- *                                        chromium on 9222 -- see test/run)
+ *   node test/wrap-caret.js             (via test/run, which starts both
+ *                                        the app and the browser for you)
  */
 const { connect, sleep, results } = require("./cdp");
 
@@ -34,7 +34,7 @@ const PROBE = `(()=>{
 const sane = (g) => Math.abs(g.dx) <= 2 && g.sameLine && g.inView && g.wordInView;
 
 (async () => {
-  const page = await connect({ match: "8421" });
+  const page = await connect();
   const r = results();
 
   for (const w of WIDTHS) {
