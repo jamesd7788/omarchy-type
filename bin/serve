@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Serve omarchy-type and push theme changes to the browser over SSE.
+
+The theme-set.d hook touches STAMP; we watch its mtime and fan the new
+colors out to every connected client, so a `omarchy theme set` recolors
+the page mid-test without a reload.
+"""
+import http.server, json, os, pathlib, queue, socketserver, subprocess, sys, threading, time
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+STAMP = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "omarchy-type/theme-stamp"
+PORT = int(os.environ.get("OMARCHY_TYPE_PORT", "8421"))
+
+clients: set[queue.Queue] = set()
+lock = threading.Lock()
+
+
+def theme() -> str:
+    """Current theme as a JSON string, via the converter."""
+    try:
+        out = subprocess.run([str(ROOT / "bin/theme-json")], capture_output=True, text=True, timeout=5)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return json.dumps({"mode": "dark", "accent": "#e2b714", "muted": "#646669",
+                       "background": "#323437", "foreground": "#d1d0c5",
+                       "red": "#ca4754", "theme": "fallback"})
+
+
+def stamp() -> tuple:
+    """(mtime, contents) of the hook's stamp file, or (None, None).
+
+    Contents are part of the key because two theme switches inside one
+    filesystem timestamp tick would otherwise look identical.
+    """
+    try:
+        st = STAMP.stat()
+        return (st.st_mtime, STAMP.read_text(errors="replace").strip())
+    except OSError:
+        return (None, None)
+
+
+def watch():
+    """Poll the stamp file; broadcast on change. Cheap -- one stat per 400ms.
+
+    A single `omarchy theme set` rewrites the theme directory in several
+    steps, so we wait for the stamp to hold still before reading colors.
+    That collapses one switch into one event and guarantees the payload
+    matches the settled theme rather than an intermediate state.
+    """
+    # Seed from the current state so the first real switch after boot is
+    # sent rather than being mistaken for initialization.
+    last = stamp()
+    last_payload = None
+
+    while True:
+        time.sleep(0.4)
+        cur = stamp()
+        if cur == last:
+            continue
+
+        # Debounce: let the switch settle before sampling the colors.
+        for _ in range(10):
+            time.sleep(0.15)
+            settled = stamp()
+            if settled == cur:
+                break
+            cur = settled
+
+        last = cur
+        payload = theme()
+        if payload == last_payload:
+            continue  # same colors as last broadcast -- nothing to say
+        last_payload = payload
+
+        with lock:
+            for q in list(clients):
+                q.put(payload)
+
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, directory=str(ROOT), **kw)
+
+    def log_message(self, *a):
+        pass  # quiet
+
+    def end_headers(self):
+        # The app is edited in place and reloaded constantly; a cached copy
+        # silently shows a stale UI whose elements the new script can't find.
+        # Never let the browser hold on to it.
+        self.send_header("Cache-Control", "no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        super().end_headers()
+
+    def send_head(self):
+        # SimpleHTTPRequestHandler honours If-Modified-Since and answers 304,
+        # which hands a browser its stale copy back no matter what
+        # Cache-Control says. Drop the header so every request is served in
+        # full, and omit Last-Modified so nothing revalidates against it.
+        for h in ("If-Modified-Since", "If-None-Match"):
+            if h in self.headers:
+                del self.headers[h]
+        return super().send_head()
+
+    def do_GET(self):
+        if self.path == "/theme":
+            body = theme().encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == "/theme/stream":
+            return self.stream()
+        return super().do_GET()
+
+    def stream(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        q: queue.Queue = queue.Queue()
+        with lock:
+            clients.add(q)
+        try:
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    payload = q.get(timeout=20)
+                    self.wfile.write(f"data: {payload}\n\n".encode())
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")  # keep proxies/browser awake
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            with lock:
+                clients.discard(q)
+
+
+class Server(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+if __name__ == "__main__":
+    STAMP.parent.mkdir(parents=True, exist_ok=True)
+    if not STAMP.exists():
+        # Materialize it so the watcher has a real baseline to seed from.
+        try:
+            STAMP.write_text("init\n")
+        except OSError:
+            pass
+    threading.Thread(target=watch, daemon=True).start()
+    try:
+        with Server(("127.0.0.1", PORT), Handler) as srv:
+            print(f"omarchy-type serving on http://127.0.0.1:{PORT}", file=sys.stderr)
+            srv.serve_forever()
+    except KeyboardInterrupt:
+        pass

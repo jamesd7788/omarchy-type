@@ -1,0 +1,1314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>omarchy-type</title>
+<link rel="icon" href="data:,">
+<style>
+  /* Palette is injected from the live Omarchy theme at runtime; these are
+     only the pre-paint defaults so the first frame is never white. */
+  :root {
+    --bg: #323437;
+    --text: #d1d0c5;
+    --sub: #646669;
+    --sub-alt: #2c2e31;
+    --accent: #e2b714;
+    --error: #ca4754;
+    --error-extra: #7e2a33;
+
+    --font: "JetBrainsMono Nerd Font", "JetBrains Mono";
+    /* Word strip metrics. The size scales smoothly with the viewport --
+       a breakpoint that changed font-size alone used to leave --line-h
+       behind, so the line box stopped being 1.5x the type and every
+       caret offset derived from it went wrong.
+       --line-h is ALWAYS 1.5 x --word-size; never set one without the
+       other. Both are absolute units so #wrap and #words agree; an em
+       line-height would resolve against each element's own font-size. */
+    /* Fixed at every viewport size. A narrow window fits fewer words per
+       line and rewraps -- the type never shrinks. */
+    --word-size: 1.875rem;
+    --line-h: calc(1.5 * var(--word-size));
+    --strip: min(920px, 100%);
+    --caret-w: 2px;
+    --speed: .1s;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--sub);
+    /* --font is swapped at runtime for the system monospace font that
+       fontconfig reports, i.e. whatever your terminal and Omarchy use. */
+    font-family: var(--font), ui-monospace, SFMono-Regular, Menlo,
+                 Consolas, monospace;
+    display: flex;
+    flex-direction: column;
+    /* Recolor smoothly when the Omarchy theme changes underneath us. */
+    transition: background-color .25s ease, color .25s ease;
+    overflow: hidden;
+  }
+
+  /* ---------- chrome ---------- */
+
+  header, footer {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1.25rem 2rem;
+    font-size: .8rem;
+  }
+
+  footer { justify-content: center; gap: 2rem; color: var(--sub); }
+
+  .brand {
+    appearance: none;
+    border: 0;
+    background: none;
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: -.02em;
+    transition: color var(--speed) ease;
+  }
+  .brand .full span { color: var(--sub); font-weight: 400; }
+
+  /* Collapsed to a dot: only the logo remains, as a small marker. */
+  .brand .dot { display: none; color: var(--sub); font-size: .7rem; }
+  body.zen .brand .full { display: none; }
+  body.zen .brand .dot { display: inline; }
+  body.zen .brand:hover .dot { color: var(--accent); }
+
+  /* Zen mode: everything but the test itself fades out. Kept in the
+     layout (not display:none) so nothing reflows on the way in or out. */
+  #modes, footer, #restart, #live {
+    transition: opacity .2s ease, visibility .2s ease;
+  }
+  body.zen #modes,
+  body.zen footer,
+  body.zen #restart {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  /* Settings are bare text -- no pill, no chrome. */
+  #modes {
+    margin-left: auto;
+    display: flex;
+    align-items: baseline;
+    gap: 1.15rem;
+  }
+
+  .mode {
+    appearance: none;
+    border: 0;
+    background: none;
+    padding: 0;
+    font: inherit;
+    color: var(--sub);
+    cursor: pointer;
+    transition: color var(--speed) ease;
+  }
+  .mode:hover { color: var(--text); }
+  .mode[aria-pressed="true"] { color: var(--accent); }
+
+  /* A whitespace gap between groups, rather than a drawn divider. */
+  .sep { width: .5rem; }
+
+  /* ---------- main ---------- */
+
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0 2rem;
+    min-height: 0;
+  }
+
+  #stage {
+    width: min(1000px, 100%);
+    margin: 0 auto;
+    /* Reserve the test's full height so swapping in the results panel
+       doesn't shift the page around. */
+    min-height: calc(var(--line-h) * 3 + 8rem);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  /* Live counter (time left, or words done). Hidden until the test starts.
+     Shares the word strip's width so it sits flush with the first word. */
+  #live {
+    width: var(--strip);
+    margin: 0 auto;
+    color: var(--accent);
+    font-size: 1.75rem;
+    height: 2.2rem;
+    line-height: 2.2rem;
+    opacity: 0;
+    transition: opacity var(--speed) ease;
+  }
+  #live.on { opacity: 1; }
+
+  /* ---------- words ---------- */
+
+  #wrap {
+    position: relative;
+    /* Exactly three lines tall, like Monkeytype -- the strip scrolls. */
+    height: calc(var(--line-h) * 3);
+    overflow: hidden;
+    /* Slightly inset so long lines don't touch the viewport edges. */
+    width: var(--strip);
+    margin: 0 auto;
+  }
+
+  #words {
+    position: relative;
+    font-size: var(--word-size);
+    line-height: var(--line-h);
+    letter-spacing: .01em;
+    /* translateY is animated to scroll whole lines into view. */
+    will-change: transform;
+    filter: blur(0);
+    transition: transform .15s ease, filter .18s ease, opacity .18s ease;
+    user-select: none;
+  }
+
+  .word {
+    display: inline-block;
+    margin: 0 .35em 0 0;
+    border-bottom: 2px solid transparent;
+    padding-bottom: 1px;
+  }
+  /* A completed-but-imperfect word gets Monkeytype's red underline. */
+  .word.bad { border-bottom-color: var(--error); }
+
+  .word span { color: var(--sub); transition: color var(--speed) ease; }
+  .word span.ok { color: var(--text); }
+  .word span.no { color: var(--error); }
+  .word span.extra { color: var(--error-extra); }
+
+  /* ---------- caret ---------- */
+
+  #caret {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: var(--caret-w);
+    height: var(--caret-line, 36px);
+    background: var(--accent);
+    border-radius: 1px;
+    /* Glide between letters rather than teleporting. */
+    transition: transform .1s cubic-bezier(.2, .6, .3, 1),
+                opacity .1s ease,
+                background-color .25s ease;
+    will-change: transform;
+  }
+
+  /* Caret geometry is measured in JS from the real font, not guessed:
+     --cap-top / --base-y are the ink top and the baseline, in px from
+     the top of the line box. Centring on the line box instead would hang
+     the caret low, because the box carries more leading below the glyphs
+     than above them. */
+
+  /* Bar: spans the cap band (cap top to baseline) with a small trail past
+     each end. Sizing it to the full ascender-to-descender ink makes it
+     tower over the text and read as a divider rather than a cursor.
+     Nudged left by half its width so it straddles the gap between two
+     characters instead of crowding the one it marks. */
+  body.caret-bar #caret {
+    /* Proportional to the type, so the caret keeps the same look at every
+       viewport size -- fixed px would loom over small text. */
+    --trail: .13em;
+    --bar-w: max(2px, .1em);
+    /* Extra rise above the ascenders. Added to the top only: the height
+       grows by the same amount, so the bottom edge stays put. */
+    --rise: .17em;
+    font-size: var(--word-size);   /* the em basis for the three above */
+    margin-top: calc(var(--cap-top, 3px) - var(--trail) + .07em - var(--rise));
+    margin-left: calc(var(--bar-w) / -2);
+    height: calc(var(--cap-h, 22px) + 2 * var(--trail) + var(--rise));
+    width: var(--bar-w);
+  }
+
+  /* Underscore: spans the full character cell it sits beneath. --char-w
+     is measured from the real font -- `1ch` would resolve against the
+     root font size, not the (much larger) word size. */
+  body.caret-underline #caret {
+    font-size: var(--word-size);   /* em basis */
+    margin-top: calc(var(--base-y, 26px) + .13em);
+    height: max(2px, .1em);
+    width: var(--char-w, 1ch);
+    border-radius: 2px;
+  }
+  /* Blink only while idle, so it never blinks mid-keystroke. */
+  #caret.idle { animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+
+  /* Unfocused state: the words go properly out of focus, so the prompt
+     sitting on top of them is what the eye lands on. Eases back in
+     quickly so clicking in never feels sluggish. */
+  #wrap.blurred #words {
+    filter: blur(4.5px);
+    opacity: .5;
+  }
+  #wrap.blurred #caret { opacity: 0; animation: none; }
+  #veil {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    color: var(--text);
+    font-size: .95rem;
+    cursor: pointer;
+    z-index: 2;
+  }
+  #wrap.blurred #veil { display: flex; }
+  /* Zen mode keeps the click target but drops the words. */
+  body.zen #wrap.blurred #veil { font-size: 0; }
+
+  /* ---------- restart ---------- */
+
+  #restart {
+    display: flex;
+    justify-content: center;
+    margin-top: 2rem;
+  }
+  #restart button {
+    appearance: none;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-size: 1.1rem;
+    color: var(--sub);
+    cursor: pointer;
+    padding: .5rem;
+    transition: color var(--speed) ease;
+  }
+  #restart button:hover { color: var(--text); }
+
+  /* ---------- results ---------- */
+
+  /* A single centred column: the speed, then the supporting figures as
+     a quiet ledger beneath it. */
+  #results {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.75rem;
+    animation: rise .25s ease both;
+  }
+  #results.on { display: flex; }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(.5rem); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  /* The headline number, with its unit tucked beside it. The unit is
+     absolutely placed so it doesn't drag the digits off centre. */
+  .big {
+    position: relative;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+  }
+  .big .k {
+    position: absolute;
+    left: 100%;
+    bottom: .35rem;
+    margin-left: .45rem;
+    font-size: 1rem;
+    color: var(--sub);
+    white-space: nowrap;
+  }
+  .big .v {
+    font-size: 5rem;
+    line-height: 1;
+    color: var(--accent);
+    font-weight: 700;
+    letter-spacing: -.03em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Label-left, value-right rows on a shared baseline grid. The dotted
+     leader ties each label to its number without drawing boxes. */
+  .small {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: baseline;
+    gap: .55rem 0;
+    min-width: min(20rem, 80vw);
+    font-size: .9rem;
+  }
+  .small .k {
+    color: var(--sub);
+    grid-column: 1;
+  }
+  .small .lead {
+    grid-column: 2;
+    align-self: center;
+    height: 1px;
+    margin: 0 .6rem;
+    background: repeating-linear-gradient(
+      to right, var(--sub) 0 2px, transparent 2px 6px);
+    opacity: .35;
+  }
+  .small .v {
+    grid-column: 3;
+    /* Right-aligned so the digits stack in a column, not a ragged edge. */
+    text-align: right;
+    min-width: 5ch;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  #r-again {
+    color: var(--sub);
+    font-size: .85rem;
+  }
+
+  /* Zen mode drops the go-again prompt along with the rest of the chrome;
+     enter still works. */
+  body.zen #r-again { display: none; }
+
+  /* A broken master run reports the speed you reached and nothing else --
+     accuracy and consistency of an aborted run aren't worth reading. */
+  #results.failed .small { display: none; }
+
+  /* Master mode: the whole page goes taut. */
+  #master[aria-pressed="true"] { color: var(--error); }
+  body.master #caret { background: var(--error); }
+  body.master .brand { color: var(--error); }
+
+  /* A broken master run is reported on the results screen, not by
+     flashing the page -- the results appearing is signal enough. */
+
+  kbd {
+    font: inherit;
+    color: var(--text);
+  }
+
+
+  /* Offscreen input: captures keys on mobile/IME without ever being seen. */
+  #sink {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+    left: -9999px;
+    width: 1px; height: 1px;
+  }
+
+  @media (max-width: 700px) {
+    header, footer { padding: 1rem; flex-wrap: wrap; }
+    #modes { margin-left: 0; width: 100%; justify-content: center; }
+    main { padding: 0 1rem; }
+    /* Do NOT set #words font-size here -- --word-size already scales, and
+       overriding it alone would desync --line-h and break the caret. */
+    .big .v { font-size: 3rem; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <button class="brand" id="brand" title="hide everything"><span class="full">omarchy<span>type</span></span><span class="dot">●</span></button>
+
+  <div id="modes" role="group" aria-label="test mode">
+    <button class="mode" data-mode="time" data-n="15">15</button>
+    <button class="mode" data-mode="time" data-n="30">30</button>
+    <button class="mode" data-mode="time" data-n="60">60</button>
+    <div class="sep"></div>
+    <button class="mode" data-mode="words" data-n="10">10 words</button>
+    <div class="sep"></div>
+    <button class="mode" id="master" title="any mistake ends the test">master</button>
+    <div class="sep"></div>
+    <button class="mode" id="caret-style" title="caret style">caret</button>
+  </div>
+</header>
+
+<main>
+  <div id="stage">
+    <div id="live" aria-live="off"></div>
+
+    <div id="wrap">
+      <div id="words"></div>
+      <div id="caret"></div>
+      <div id="veil">click or press any key to focus</div>
+    </div>
+
+    <div id="restart"><button id="again" title="tab">restart</button></div>
+
+    <div id="results" role="status">
+      <div class="big">
+        <div class="v" id="r-wpm">0</div>
+        <div class="k">wpm</div>
+      </div>
+      <div class="small">
+        <div class="k">accuracy</div><div class="lead"></div><div class="v" id="r-acc">0%</div>
+        <div class="k">raw</div><div class="lead"></div><div class="v" id="r-raw">0</div>
+        <div class="k">consistency</div><div class="lead"></div><div class="v" id="r-con">0%</div>
+        <div class="k">correct</div><div class="lead"></div><div class="v" id="r-ok">0</div>
+        <div class="k">missed</div><div class="lead"></div><div class="v" id="r-miss">0</div>
+        <div class="k">test</div><div class="lead"></div><div class="v" id="r-mode">—</div>
+      </div>
+      <div id="r-again">press <kbd>enter</kbd> to go again</div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <span><kbd>tab</kbd> restart</span>
+  <span><kbd>esc</kbd> reset</span>
+</footer>
+
+<input id="sink" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-hidden="true" tabindex="-1">
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ *
+ * Theme -- maps Omarchy's semantic colors.toml onto our CSS variables.
+ * ------------------------------------------------------------------ */
+
+const FALLBACK = {
+  mode: "dark", background: "#323437", foreground: "#d1d0c5",
+  muted: "#646669", accent: "#e2b714", red: "#ca4754", theme: "default",
+};
+
+/** Blend two #rrggbb colors. t=0 -> a, t=1 -> b. */
+function mix(a, b, t) {
+  const p = (h) => {
+    h = String(h || "").trim().replace(/^#/, "");
+    if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+    const n = parseInt(h, 16);
+    return Number.isFinite(n) && h.length === 6
+      ? [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+      : null;
+  };
+  const x = p(a), y = p(b);
+  if (!x || !y) return a;
+  const c = x.map((v, i) => Math.round(v + (y[i] - v) * t));
+  return "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+
+function applyTheme(c) {
+  c = Object.assign({}, FALLBACK, c || {});
+  const light = c.mode === "light";
+  const bg = c.background;
+  const err = c.red || c.bright_red || FALLBACK.red;
+
+  // sub-alt is Monkeytype's raised-surface color; Omarchy gives us a
+  // ready-made one on dark themes, but light themes need a nudge the
+  // other way so the pill doesn't vanish into the page.
+  const subAlt = light
+    ? mix(bg, c.foreground, 0.1)
+    : (c.lighter_background || c.selection || mix(bg, c.foreground, 0.1));
+
+  const s = document.documentElement.style;
+  s.setProperty("--bg", bg);
+  s.setProperty("--text", c.bright_foreground || c.foreground);
+  s.setProperty("--sub", c.muted || c.dark_foreground);
+  s.setProperty("--sub-alt", subAlt);
+  s.setProperty("--accent", c.accent);
+  s.setProperty("--error", err);
+  // Extra (overtyped) chars sit halfway to the background -- present but quiet.
+  s.setProperty("--error-extra", mix(err, bg, light ? 0.45 : 0.5));
+
+  // Let the browser paint form controls/scrollbars to match.
+  document.documentElement.style.colorScheme = light ? "light" : "dark";
+
+  applyFont(c.font);
+}
+
+/* The system monospace font, as reported by fontconfig. Locally installed
+   families aren't reachable by name alone, so register one via @font-face
+   with a local() source before using it. */
+let currentFont = null;
+function applyFont(name) {
+  if (!name || name === currentFont) return;
+  currentFont = name;
+
+  const id = "omarchy-font";
+  let tag = document.getElementById(id);
+  if (!tag) {
+    tag = document.createElement("style");
+    tag.id = id;
+    document.head.appendChild(tag);
+  }
+  const safe = name.replace(/["\\]/g, "");
+  tag.textContent =
+    `@font-face{font-family:"omarchy-system";src:local("${safe}");}`;
+
+  document.documentElement.style.setProperty(
+    "--font", `"omarchy-system", "${safe}"`);
+
+  // Metrics just changed -- re-measure, then re-place the caret.
+  const settle = () => { try { lineHeight(); moveCaret(); } catch {} };
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(settle);
+  }
+  requestAnimationFrame(settle);
+}
+
+async function initTheme() {
+  try {
+    const r = await fetch("/theme", { cache: "no-store" });
+    if (r.ok) applyTheme(await r.json());
+  } catch { /* served over file:// -- defaults are fine */ }
+
+  // Live push: the theme-set.d hook nudges the server, which fans out here.
+  try {
+    const es = new EventSource("/theme/stream");
+    es.onmessage = (e) => {
+      try { applyTheme(JSON.parse(e.data)); } catch {}
+    };
+  } catch {}
+}
+
+/* ------------------------------------------------------------------ *
+ * Words
+ * ------------------------------------------------------------------ */
+
+let POOL = ["the", "be", "of", "and", "a", "to", "in", "he", "have", "it"];
+
+async function loadWords() {
+  try {
+    const r = await fetch("words/english.json", { cache: "force-cache" });
+    if (r.ok) {
+      const j = await r.json();
+      if (Array.isArray(j.words) && j.words.length) POOL = j.words;
+    }
+  } catch { /* keep the tiny built-in pool */ }
+}
+
+const pick = () => POOL[(Math.random() * POOL.length) | 0];
+
+/* ------------------------------------------------------------------ *
+ * Test state
+ * ------------------------------------------------------------------ */
+
+const el = {
+  words: document.getElementById("words"),
+  wrap: document.getElementById("wrap"),
+  caret: document.getElementById("caret"),
+  live: document.getElementById("live"),
+  results: document.getElementById("results"),
+  restart: document.getElementById("restart"),
+  sink: document.getElementById("sink"),
+};
+
+// A test is `time` (n seconds, endless words) or `words` (exactly n words).
+let mode = "time", limit = 15;
+// Master: a single wrong character ends the run immediately.
+let master = false;
+let failed = false;
+
+// Caret styles, cycled by the toolbar button.
+const CARETS = {
+  bar:       { label: "bar" },
+  underline: { label: "underscore" },
+};
+let caret = "bar";
+// True when a words test ended on its final letter (no trailing space typed).
+let endedOnLastChar = false;
+
+let words = [];      // target words
+let typed = [];      // what the user actually entered, per word
+let wi = 0;          // current word index
+let started = 0;     // performance.now() at first keystroke, 0 if not started
+let running = false;
+let done = false;
+let ticker = null;
+let idleTimer = null;
+let wpmSamples = []; // per-second raw wpm, for consistency
+let lastCorrect = 0; // correct chars at the previous sample
+
+const BUFFER = 60;   // words kept ahead in time mode
+
+function reset() {
+  clearInterval(ticker);
+  ticker = null;
+  running = false;
+  done = false;
+  failed = false;
+  endedOnLastChar = false;
+  started = 0;
+  wi = 0;
+  typed = [""];
+  wpmSamples = [];
+  lastCorrect = 0;
+
+  const n = mode === "words" ? limit : BUFFER;
+  words = Array.from({ length: n }, pick);
+
+  el.results.classList.remove("on");
+  el.wrap.style.display = "";
+  el.restart.style.display = "";
+  el.live.classList.remove("on");
+  el.live.textContent = mode === "time" ? limit : `0/${limit}`;
+  el.words.style.transform = "translateY(0)";
+
+  render();
+  focusTest();
+  requestAnimationFrame(moveCaret);
+}
+
+/** Rebuild the word strip. Cheap enough at these sizes to do wholesale. */
+function render() {
+  const frag = document.createDocumentFragment();
+
+  for (let i = 0; i < words.length; i++) {
+    const w = document.createElement("div");
+    w.className = "word";
+    const target = words[i];
+    const got = typed[i] ?? "";
+
+    for (let j = 0; j < target.length; j++) {
+      const s = document.createElement("span");
+      s.textContent = target[j];
+      if (j < got.length) s.className = got[j] === target[j] ? "ok" : "no";
+      w.appendChild(s);
+    }
+    // Overtyped characters get appended in muted red.
+    for (let j = target.length; j < got.length; j++) {
+      const s = document.createElement("span");
+      s.className = "extra";
+      s.textContent = got[j];
+      w.appendChild(s);
+    }
+    // Past words that weren't perfect keep a red underline.
+    if (i < wi && got !== target) w.classList.add("bad");
+
+    frag.appendChild(w);
+  }
+
+  el.words.replaceChildren(frag);
+}
+
+/* ------------------------------------------------------------------ *
+ * Caret + line scrolling
+ * ------------------------------------------------------------------ */
+
+function moveCaret() {
+  const word = el.words.children[wi];
+  if (!word) return;
+
+  const got = typed[wi] ?? "";
+  const spans = word.children;
+  const box = el.words.getBoundingClientRect();
+
+  let x, y;
+  if (spans.length === 0) {
+    const r = word.getBoundingClientRect();
+    x = r.left - box.left;
+    y = r.top - box.top;
+  } else if (got.length === 0) {
+    const r = spans[0].getBoundingClientRect();
+    x = r.left - box.left;
+    y = r.top - box.top;
+  } else {
+    // Sit just after the last character actually typed.
+    const s = spans[Math.min(got.length, spans.length) - 1];
+    const r = s.getBoundingClientRect();
+    x = r.right - box.left;
+    y = r.top - box.top;
+  }
+
+  // y is relative to #words' own box, so it is the untranslated line
+  // position. Scroll first, then place the caret in #wrap's space by
+  // adding the (negative) strip offset.
+  scrollLines(y);
+  el.caret.style.transform = `translate(${x}px, ${y + lineOffset}px)`;
+}
+
+/* Keep the active word on the middle line: once the caret reaches the
+   third line, shift the strip up by one line. Never scrolls back. */
+let lineOffset = 0;   // px the strip is translated by
+let lineTop = 0;      // absolute index of the line shown at the top
+
+/* Measure the words' real font metrics and publish them as CSS variables
+   so the caret can be positioned against the glyphs themselves.
+
+   --caret-line  line box height
+   --cap-top     y of the top of the ink, from the line box top
+   --base-y      y of the baseline
+   --ink         height of the ink band (cap top to descender bottom)
+
+   Chromium's TextMetrics gives us ascent/descent for the actual resolved
+   face, so this stays correct whatever font fontconfig hands us. */
+let measureCanvas = null;
+function lineHeight() {
+  const cs = getComputedStyle(el.words);
+  const lh = parseFloat(cs.lineHeight);
+  const px = Number.isFinite(lh) && lh > 0 ? lh : 36;
+  const root = document.documentElement.style;
+  root.setProperty("--caret-line", px + "px");
+
+  try {
+    measureCanvas ??= document.createElement("canvas").getContext("2d");
+    measureCanvas.font = `${cs.fontSize} ${cs.fontFamily}`;
+
+    // Advance width of one character cell, including letter-spacing --
+    // this is what the underscore caret spans.
+    const ls = parseFloat(cs.letterSpacing);
+    const adv = measureCanvas.measureText("0").width +
+                (Number.isFinite(ls) ? ls : 0);
+    if (adv > 0) root.setProperty("--char-w", adv.toFixed(2) + "px");
+
+    // Ink extremes: a cap/ascender and a descender.
+    const m = measureCanvas.measureText("Hhdpqy");
+    const asc = m.actualBoundingBoxAscent;
+    const desc = m.actualBoundingBoxDescent;
+    if (Number.isFinite(asc) && Number.isFinite(desc) && asc > 0) {
+      // Baseline position: half-leading plus the font's own ascent.
+      const half = (px - (m.fontBoundingBoxAscent + m.fontBoundingBoxDescent)) / 2;
+      const base = half + m.fontBoundingBoxAscent;
+      root.setProperty("--base-y", base.toFixed(2) + "px");
+      root.setProperty("--cap-top", (base - asc).toFixed(2) + "px");
+      root.setProperty("--ink", (asc + desc).toFixed(2) + "px");
+      // Cap band: cap top down to the baseline, i.e. what an uppercase
+      // letter occupies. The bar caret is sized to this, not to the full
+      // ascender-to-descender span.
+      root.setProperty("--cap-h", asc.toFixed(2) + "px");
+    }
+  } catch { /* keep the CSS fallbacks */ }
+
+  return px;
+}
+function scrollLines(caretY) {
+  const lh = lineHeight();
+  const line = Math.round(caretY / lh);   // absolute line index
+  // Keep the active line at the top of the window so two lines of upcoming
+  // text stay visible below it -- three lines on screen at all times.
+  if (line > lineTop) {
+    lineTop = line;
+    lineOffset = -lineTop * lh;
+    el.words.style.transform = `translateY(${lineOffset}px)`;
+  }
+}
+
+function markActive() {
+  clearTimeout(idleTimer);
+  el.caret.classList.remove("idle");
+  idleTimer = setTimeout(() => el.caret.classList.add("idle"), 900);
+}
+
+/* ------------------------------------------------------------------ *
+ * Scoring
+ * ------------------------------------------------------------------ */
+
+/** Correct / incorrect / extra / missed characters over the whole test. */
+/* Character counting, mirroring Monkeytype's countChars().
+
+   The important subtlety: `correctWord` credits characters ONLY from words
+   typed entirely correctly. A word with a single wrong letter contributes
+   nothing to WPM, even for the letters that were right -- which is why
+   Monkeytype's WPM drops so sharply when you make mistakes. `allCorrect`
+   counts every correct character regardless, and feeds raw WPM. */
+function countChars(input, target, creditPartial) {
+  let allCorrect = 0, correctWord = 0, incorrect = 0, extra = 0, missed = 0;
+
+  const wordCorrect = input === target;
+  const wordPartiallyCorrect = target.startsWith(input);
+
+  for (let i = 0; i < Math.max(input.length, target.length); i++) {
+    const ic = input[i], tc = target[i];
+
+    if (ic === tc) {
+      allCorrect++;
+      if (wordCorrect || (creditPartial && wordPartiallyCorrect)) correctWord++;
+    } else if (ic === undefined) {
+      if (!creditPartial) missed++;      // never reached these characters
+    } else if (tc === undefined) {
+      extra++;                            // typed past the end of the word
+    } else {
+      incorrect++;
+    }
+  }
+  return { allCorrect, correctWord, incorrect, extra, missed };
+}
+
+/** Aggregate character counts over the whole test. */
+function tally() {
+  const acc = { allCorrect: 0, correctWord: 0, incorrect: 0, extra: 0, missed: 0 };
+  const upto = Math.min(mode === "words" ? words.length : wi + 1, words.length);
+
+  // A partially-typed final word is credited in timed tests (you were cut off
+  // mid-word by the clock), but not in a words test you completed.
+  const creditPartial = mode === "time";
+
+  for (let i = 0; i < upto; i++) {
+    const got = typed[i] ?? "";
+    if (i > wi) break;                               // not reached yet
+    const r = countChars(got, words[i], i === wi && creditPartial);
+    acc.allCorrect += r.allCorrect;
+    acc.correctWord += r.correctWord;
+    acc.incorrect += r.incorrect;
+    acc.extra += r.extra;
+    acc.missed += r.missed;
+  }
+
+  // Each space actually pressed between words is a correct keystroke. A
+  // words test that ended on its final letter has one fewer space than
+  // words, since no trailing space was typed.
+  const spaces = Math.max(0, Math.min(wi, words.length) - (endedOnLastChar ? 1 : 0));
+  acc.allCorrect += spaces;
+  acc.correctWord += spaces;
+
+  return acc;
+}
+
+const elapsed = () => (started ? (performance.now() - started) / 1000 : 0);
+
+/** A "word" is 5 characters -- Monkeytype's calculateWpm(). */
+const wpmOf = (chars, seconds) =>
+  seconds <= 0 ? 0 : chars / 5 / (seconds / 60);
+
+const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+
+const stdDev = (a) => {
+  if (!a.length) return 0;
+  const m = mean(a);
+  return Math.sqrt(mean(a.map((x) => (x - m) ** 2)));
+};
+
+/* Monkeytype maps the coefficient of variation onto [100, 0) with this
+   sigmoid rather than a linear falloff, so mid-range consistency scores
+   land noticeably lower than a naive (1 - cov) would give. */
+const kogasa = (cov) =>
+  100 * (1 - Math.tanh(cov + cov ** 3 / 3 + cov ** 5 / 5));
+
+function stats() {
+  const t = Math.max(elapsed(), 0.001);
+  const c = tally();
+
+  // WPM counts only characters from fully-correct words; raw counts
+  // everything actually struck.
+  const wpm = Math.max(0, Math.round(wpmOf(c.correctWord, t)));
+  const raw = Math.max(0, Math.round(
+    wpmOf(c.allCorrect + c.incorrect + c.extra, t)));
+
+  // Accuracy is per-keystroke: correct presses over all presses. Missed
+  // characters were never struck, so they don't count against it.
+  const struck = c.allCorrect + c.incorrect + c.extra;
+  const acc = struck ? Math.round((c.allCorrect / struck) * 100) : 0;
+
+  let con = 0;
+  if (wpmSamples.length) {
+    const m = mean(wpmSamples);
+    if (m > 0) {
+      const k = kogasa(stdDev(wpmSamples) / m);
+      con = Number.isFinite(k) ? Math.max(0, Math.round(k)) : 0;
+    }
+  }
+
+  return {
+    wpm, raw, acc, con,
+    ok: c.correctWord, bad: c.incorrect, extra: c.extra, missed: c.missed,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Run loop
+ * ------------------------------------------------------------------ */
+
+/* One tick: sample this second's raw wpm (for consistency) and, in a
+   timed test, advance the countdown. */
+function tick() {
+  const c = tally();
+  const total = c.allCorrect + c.incorrect + c.extra;
+  wpmSamples.push(Math.max(0, ((total - lastCorrect) / 5) * 60));
+  lastCorrect = total;
+
+  if (mode === "time") {
+    const left = Math.max(0, limit - Math.round(elapsed()));
+    el.live.textContent = left;
+    if (left <= 0) finish();
+  }
+}
+
+function startTicker() {
+  if (ticker) return;
+  ticker = setInterval(tick, 1000);
+}
+
+function start() {
+  if (running || done) return;
+  running = true;
+  started = performance.now();
+  el.live.classList.add("on");
+  startTicker();
+}
+
+function finish() {
+  if (done) return;
+  done = true;
+  running = false;
+  clearInterval(ticker);
+  ticker = null;
+
+  const s = stats();
+  document.getElementById("r-wpm").textContent = s.wpm;
+  document.getElementById("r-acc").textContent = s.acc + "%";
+  document.getElementById("r-raw").textContent = s.raw;
+  document.getElementById("r-con").textContent = s.con + "%";
+  // Split the old cryptic ok/bad/extra/missed quad into two plain rows.
+  document.getElementById("r-ok").textContent = s.ok;
+  document.getElementById("r-miss").textContent = s.bad + s.extra + s.missed;
+  const label = mode === "time" ? `time ${limit}` : `words ${limit}`;
+  document.getElementById("r-mode").textContent =
+    label + (master ? (failed ? " · master failed" : " · master") : "");
+
+  el.wrap.style.display = "none";
+  el.restart.style.display = "none";  // the results screen has its own prompt
+  el.live.classList.remove("on");
+  // A failed master run shows the wpm alone.
+  el.results.classList.toggle("failed", failed);
+  el.results.classList.add("on");
+}
+
+/* ------------------------------------------------------------------ *
+ * Input
+ * ------------------------------------------------------------------ */
+
+function type(ch) {
+  if (done) return;
+  start();
+
+  const target = words[wi];
+  const at = (typed[wi] ?? "").length;
+  // In master mode a wrong char -- or any char past the end of the word --
+  // is fatal. Record it first so the mistake is visible on the results.
+  const wrong = ch !== target[at];
+
+  typed[wi] = (typed[wi] ?? "") + ch;
+  // Cap runaway overtyping so the layout can't be blown apart.
+  if (typed[wi].length > target.length + 20) {
+    typed[wi] = typed[wi].slice(0, target.length + 20);
+  }
+  render();
+  moveCaret();
+  markActive();
+
+  if (master && wrong) { fail(); return; }
+
+  // A words test ends the moment the last word is complete -- no trailing
+  // space required to commit it.
+  if (mode === "words" && wi === limit - 1 && typed[wi] === words[wi]) {
+    wi++;               // count the final word as finished
+    endedOnLastChar = true;
+    finish();
+  }
+}
+
+/** End a master run on a mistake. */
+function fail() {
+  failed = true;
+  finish();
+}
+
+function space() {
+  if (done) return;
+  // Leading spaces don't start a word.
+  if (!(typed[wi] ?? "").length) return;
+  start();
+
+  // Master mode: leaving a word before finishing it correctly is a miss.
+  if (master && (typed[wi] ?? "") !== words[wi]) { fail(); return; }
+
+  wi++;
+  if (typed[wi] === undefined) typed[wi] = "";
+
+  if (mode === "words" && wi >= limit) {
+    render();
+    finish();
+    return;
+  }
+  // Keep a healthy buffer of words ahead of the caret in time mode.
+  if (mode === "time" && words.length - wi < BUFFER / 2) {
+    for (let i = 0; i < BUFFER / 2; i++) words.push(pick());
+  }
+
+  render();
+  moveCaret();
+  markActive();
+}
+
+function back(whole) {
+  if (done) return;
+  let cur = typed[wi] ?? "";
+
+  if (cur.length === 0) {
+    // Step back into the previous word, but only if it was imperfect --
+    // matching Monkeytype's default "stop on error: off" behaviour.
+    if (wi === 0) return;
+    if ((typed[wi - 1] ?? "") === words[wi - 1]) return;
+    wi--;
+    cur = typed[wi] ?? "";
+  }
+
+  typed[wi] = whole ? "" : cur.slice(0, -1);
+  render();
+  moveCaret();
+  markActive();
+}
+
+/* ------------------------------------------------------------------ *
+ * Focus handling
+ * ------------------------------------------------------------------ */
+
+let focused = false;
+
+function focusTest() {
+  focused = true;
+  el.wrap.classList.remove("blurred");
+  el.sink.focus({ preventScroll: true });
+  markActive();
+}
+
+function blurTest() {
+  focused = false;
+  el.wrap.classList.add("blurred");
+  el.caret.classList.remove("idle");
+  // Pause the clock so an unfocused test doesn't bleed time.
+  if (running) {
+    clearInterval(ticker);
+    ticker = null;
+    running = false;
+    pausedAt = performance.now();
+  }
+}
+
+// Time spent unfocused is credited back so the WPM stays honest.
+let pausedAt = 0;
+function resume() {
+  if (pausedAt && started) {
+    started += performance.now() - pausedAt;
+    pausedAt = 0;
+    if (!done) { running = true; startTicker(); }
+  }
+}
+
+el.wrap.addEventListener("mousedown", (e) => { e.preventDefault(); focusTest(); resume(); });
+el.sink.addEventListener("blur", () => { if (focused) blurTest(); });
+
+/* ------------------------------------------------------------------ *
+ * Keys
+ * ------------------------------------------------------------------ */
+
+document.addEventListener("keydown", (e) => {
+  // Tab restarts outright, and never moves focus away.
+  if (e.key === "Tab") {
+    e.preventDefault();
+    again();
+    return;
+  }
+
+  // On the results screen, enter goes again.
+  if (e.key === "Enter" && done) {
+    e.preventDefault();
+    again();
+    return;
+  }
+
+  if (e.key === "Escape") {
+    e.preventDefault();
+    again();
+    return;
+  }
+
+  // Let real browser shortcuts through (except our own ctrl+backspace).
+  if ((e.ctrlKey || e.metaKey || e.altKey) && e.key !== "Backspace") return;
+
+  if (!focused) { focusTest(); resume(); }
+  else if (pausedAt) resume();
+
+  if (done) return;
+
+  if (e.key === "Backspace") {
+    e.preventDefault();
+    back(e.ctrlKey || e.altKey || e.metaKey);
+    return;
+  }
+  if (e.key === " ") {
+    e.preventDefault();
+    space();
+    return;
+  }
+  // Single printable character.
+  if (e.key.length === 1) {
+    e.preventDefault();
+    type(e.key);
+  }
+});
+
+// Keep the offscreen input empty; it exists only to hold focus.
+el.sink.addEventListener("input", () => { el.sink.value = ""; });
+
+/* ------------------------------------------------------------------ *
+ * Modes
+ * ------------------------------------------------------------------ */
+
+/** Start a fresh run of the current mode, from the top of the strip. */
+function again() {
+  lineOffset = 0;
+  lineTop = 0;
+  reset();
+}
+
+function save() {
+  try {
+    localStorage.setItem("omarchy-type",
+      JSON.stringify({ mode, limit, master, caret, zen }));
+  } catch {}
+}
+
+function paintModes() {
+  for (const b of document.querySelectorAll(".mode[data-mode]")) {
+    b.setAttribute("aria-pressed",
+      String(b.dataset.mode === mode && +b.dataset.n === limit));
+  }
+  const m = document.getElementById("master");
+  m.setAttribute("aria-pressed", String(master));
+  document.body.classList.toggle("master", master);
+
+  const c = document.getElementById("caret-style");
+  c.textContent = CARETS[caret].label;
+  c.title = `caret: ${CARETS[caret].label} (click to change)`;
+  for (const k of Object.keys(CARETS)) {
+    document.body.classList.toggle(`caret-${k}`, k === caret);
+  }
+  // Width changes with style, so nudge the caret back into place.
+  requestAnimationFrame(() => { try { moveCaret(); } catch {} });
+}
+
+function setMode(mo, n) {
+  mode = mo;
+  limit = n;
+  paintModes();
+  save();
+  again();
+}
+
+function setMaster(on) {
+  master = on;
+  paintModes();
+  save();
+  again();
+}
+
+for (const b of document.querySelectorAll(".mode[data-mode]")) {
+  b.addEventListener("click", () => setMode(b.dataset.mode, +b.dataset.n));
+}
+document.getElementById("master")
+  .addEventListener("click", () => setMaster(!master));
+
+/* Zen mode: collapse the chrome to a single dot. Focus goes straight back
+   to the test so the click doesn't cost you a keystroke. */
+let zen = false;
+function setZen(on) {
+  zen = on;
+  document.body.classList.toggle("zen", zen);
+  document.getElementById("brand").title =
+    zen ? "show everything" : "hide everything";
+  save();
+  focusTest();
+  requestAnimationFrame(() => { try { moveCaret(); } catch {} });
+}
+
+document.getElementById("brand").addEventListener("click", (e) => {
+  e.preventDefault();
+  setZen(!zen);
+});
+
+// Cycle caret style without disturbing a run in progress.
+document.getElementById("caret-style").addEventListener("click", () => {
+  const keys = Object.keys(CARETS);
+  caret = keys[(keys.indexOf(caret) + 1) % keys.length];
+  paintModes();
+  save();
+});
+document.getElementById("again").addEventListener("click", again);
+
+// Re-measure the caret when the line box changes underneath it.
+/* Re-measure and re-place after a resize. --word-size scales with the
+   viewport, so the line box and every caret offset derived from it change
+   too; without re-measuring, the caret keeps stale metrics. Reflowed lines
+   also invalidate the scroll position, so start the strip from the top. */
+let resizeTimer = null;
+function reflow() {
+  lineHeight();
+
+  // Words rewrap at the new width, so the old line index is meaningless.
+  // Re-derive it from where the active word actually landed, keeping that
+  // line at the top -- resizing mid-test shouldn't lose your place.
+  lineOffset = 0;
+  lineTop = 0;
+  el.words.style.transform = "translateY(0)";
+
+  const word = el.words.children[wi];
+  if (word) {
+    const lh = lineHeight();
+    const y = word.getBoundingClientRect().top -
+              el.words.getBoundingClientRect().top;
+    lineTop = Math.max(0, Math.round(y / lh));
+    lineOffset = -lineTop * lh;
+    el.words.style.transform = `translateY(${lineOffset}px)`;
+  }
+  moveCaret();
+}
+
+window.addEventListener("resize", () => {
+  reflow();
+  // Settle again once the resize stops, in case metrics were mid-flight.
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(reflow, 120);
+});
+
+/* ------------------------------------------------------------------ *
+ * Boot
+ * ------------------------------------------------------------------ */
+
+(async function main() {
+  initTheme();
+  await loadWords();
+
+  try {
+    const j = JSON.parse(localStorage.getItem("omarchy-type") || "null");
+    if (j && (j.mode === "time" || j.mode === "words")) {
+      mode = j.mode;
+      limit = +j.limit || 15;
+      master = !!j.master;
+    }
+    if (j && j.caret in CARETS) caret = j.caret;
+    if (j && j.zen) zen = true;
+  } catch {}
+
+  lineHeight();   // publish --caret-line before the caret is styled
+  document.body.classList.toggle("zen", zen);
+  document.getElementById("brand").title =
+    zen ? "show everything" : "hide everything";
+  paintModes();
+  again();  // renders, focuses, places the caret
+
+  // Fonts change metrics; re-place the caret once they land.
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => moveCaret());
+  }
+})();
+</script>
+</body>
+</html>

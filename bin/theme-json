@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Emit the current desktop theme as JSON for the app to consume.
+
+On Omarchy this reads the live theme's colors.toml. Everywhere else it
+falls back to a built-in palette, so the app runs unchanged on any OS --
+it simply keeps its default colours instead of following the desktop.
+
+Set OMARCHY_TYPE_THEME to a colors.toml of your own to use a custom
+palette on a non-Omarchy machine.
+"""
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+
+STATE = pathlib.Path(
+    os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")
+)
+THEME_DIR = STATE / "omarchy/current/theme"
+THEME_NAME = STATE / "omarchy/current/theme.name"
+
+# Monkeytype-ish defaults, used when no Omarchy theme is present.
+FALLBACK = {
+    "mode": "dark",
+    "accent": "#e2b714",
+    "muted": "#646669",
+    "background": "#323437",
+    "foreground": "#d1d0c5",
+    "red": "#ca4754",
+}
+
+
+def colors_file():
+    """The colors.toml to read, or None if there isn't one."""
+    override = os.environ.get("OMARCHY_TYPE_THEME")
+    if override:
+        p = pathlib.Path(override).expanduser()
+        return p if p.is_file() else None
+    f = THEME_DIR / "colors.toml"
+    return f if f.is_file() else None
+
+
+def parse_toml(f):
+    """colors.toml is a flat table of `key = "value"` pairs. tomllib is
+    stdlib on 3.11+; the hand-rolled fallback covers older Pythons."""
+    try:
+        import tomllib
+        with f.open("rb") as fh:
+            return tomllib.load(fh)
+    except ImportError:
+        pass
+    except Exception:
+        return {}
+
+    data = {}
+    for raw in f.read_text(errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        line = line.split("#", 1)[0]
+        k, _, v = line.partition("=")
+        data[k.strip()] = v.strip().strip('"').strip("'")
+    return data
+
+
+def load():
+    f = colors_file()
+    if f is None:
+        return dict(FALLBACK), False
+    try:
+        data = parse_toml(f)
+    except OSError:
+        return dict(FALLBACK), False
+    merged = {**FALLBACK, **{k: v for k, v in data.items() if isinstance(v, str)}}
+    return merged, True
+
+
+def theme_name(themed):
+    if not themed:
+        return "default"
+    if os.environ.get("OMARCHY_TYPE_THEME"):
+        return pathlib.Path(os.environ["OMARCHY_TYPE_THEME"]).parent.name or "custom"
+    try:
+        return THEME_NAME.read_text().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def font():
+    """The system monospace family. fontconfig is the source of truth on
+    Linux (the same one `omarchy font current` uses); elsewhere we let the
+    page fall back to its own stack."""
+    if not shutil.which("fc-match"):
+        return None
+    try:
+        out = subprocess.run(
+            ["fc-match", "monospace", "-f", "%{family}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0:
+            # fc-match returns a comma-separated alias list.
+            fam = out.stdout.strip().split(",")[0].strip()
+            return fam or None
+    except Exception:
+        pass
+    return None
+
+
+def main():
+    colors, themed = load()
+    colors["theme"] = theme_name(themed)
+    f = font()
+    if f:
+        colors["font"] = f
+    json.dump(colors, sys.stdout)
+    sys.stdout.write("\n")
+
+
+if __name__ == "__main__":
+    main()

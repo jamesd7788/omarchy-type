@@ -1,0 +1,6 @@
+#!/bin/bash
+# Omarchy theme-set hook: nudge omarchy-type so open tabs recolor live.
+# The server watches this stamp file's mtime and pushes over SSE.
+STAMP="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-type/theme-stamp"
+mkdir -p "$(dirname "$STAMP")"
+printf '%s\n' "${1:-unknown}" > "$STAMP"

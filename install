@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Install omarchy-type: link the launcher onto PATH and, on Omarchy,
+# register the theme hook so open tabs recolour when you change themes.
+#
+# Everything is optional and reversible:
+#   ./install            link launcher + hook (if Omarchy is present)
+#   ./install --uninstall  remove both
+set -euo pipefail
+
+here() {
+  local src=${BASH_SOURCE[0]} dir
+  while [ -L "$src" ]; do
+    dir=$(cd -P "$(dirname "$src")" && pwd)
+    src=$(readlink "$src")
+    [[ $src != /* ]] && src=$dir/$src
+  done
+  cd -P "$(dirname "$src")" && pwd
+}
+
+ROOT=$(here)
+BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
+HOOK_DIR="$HOME/.config/omarchy/hooks/theme-set.d"
+HOOK="$HOOK_DIR/omarchy-type-theme-hook"
+
+if [[ ${1:-} == --uninstall ]]; then
+  rm -f "$BIN/omarchy-type" && echo "removed $BIN/omarchy-type"
+  rm -f "$HOOK" && echo "removed $HOOK" || true
+  exit 0
+fi
+
+command -v python3 >/dev/null 2>&1 || {
+  echo "omarchy-type: python3 is required (stdlib only, no packages)" >&2
+  exit 1
+}
+
+chmod +x "$ROOT/bin/"* 2>/dev/null || true
+
+mkdir -p "$BIN"
+ln -sf "$ROOT/bin/omarchy-type" "$BIN/omarchy-type"
+echo "linked $BIN/omarchy-type"
+
+case ":$PATH:" in
+  *":$BIN:"*) ;;
+  *) echo "note: $BIN is not on your PATH -- add it to use 'omarchy-type' directly" ;;
+esac
+
+# The theme hook only means anything on Omarchy. Elsewhere the app runs
+# fine with its built-in palette, so skip it quietly.
+if command -v omarchy >/dev/null 2>&1; then
+  omarchy hook install theme-set "$ROOT/bin/omarchy-type-theme-hook" >/dev/null 2>&1 ||
+    { mkdir -p "$HOOK_DIR"; cp "$ROOT/bin/omarchy-type-theme-hook" "$HOOK"; chmod 755 "$HOOK"; }
+  echo "installed theme-set hook -> live recolouring enabled"
+elif [[ -d "$HOME/.config/omarchy/hooks" ]]; then
+  mkdir -p "$HOOK_DIR"
+  cp "$ROOT/bin/omarchy-type-theme-hook" "$HOOK"
+  chmod 755 "$HOOK"
+  echo "installed theme-set hook -> live recolouring enabled"
+else
+  echo "no Omarchy detected -- the app will use its built-in palette"
+  echo "  (point OMARCHY_TYPE_THEME at a colors.toml to theme it anyway)"
+fi
+
+echo
+echo "run: omarchy-type"

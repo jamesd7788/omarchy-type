@@ -1,0 +1,5 @@
+# Chromium profiles and logs from the headless test runs
+test/.cache/
+*.log
+*.png
+!docs/*.png

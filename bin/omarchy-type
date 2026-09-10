@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Launch omarchy-type: start the server if it isn't already up, then open it.
+#
+#   omarchy-type              start (if needed) and open a browser
+#   omarchy-type --serve-only just print the URL
+#   omarchy-type --stop       stop a running server
+set -euo pipefail
+
+# Resolve this script's directory without readlink -f, which BSD/macOS lacks.
+here() {
+  local src=${BASH_SOURCE[0]} dir
+  while [ -L "$src" ]; do
+    dir=$(cd -P "$(dirname "$src")" && pwd)
+    src=$(readlink "$src")
+    [[ $src != /* ]] && src=$dir/$src
+  done
+  cd -P "$(dirname "$src")/.." && pwd
+}
+
+ROOT=$(here)
+PORT="${OMARCHY_TYPE_PORT:-8421}"
+URL="http://127.0.0.1:$PORT"
+
+# python3 is the only hard dependency.
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "omarchy-type: python3 is required but was not found on PATH" >&2
+  exit 1
+fi
+
+alive() { curl -sf --max-time 1 "$URL/theme" >/dev/null 2>&1; }
+
+# Detach the server so it outlives this shell. setsid is Linux-only;
+# nohup works everywhere.
+spawn() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$ROOT/bin/serve" >/dev/null 2>&1 </dev/null &
+  else
+    nohup "$ROOT/bin/serve" >/dev/null 2>&1 </dev/null &
+  fi
+  disown 2>/dev/null || true
+}
+
+# Open a URL with whatever this platform provides.
+open_url() {
+  local u=$1
+  if command -v omarchy >/dev/null 2>&1 && omarchy launch webapp "$u" 2>/dev/null; then
+    return 0
+  fi
+  for opener in xdg-open open wslview; do
+    if command -v "$opener" >/dev/null 2>&1; then
+      "$opener" "$u" >/dev/null 2>&1 && return 0
+    fi
+  done
+  # Nothing to open with -- printing the URL is still useful.
+  echo "$u"
+}
+
+case "${1:-}" in
+  --stop)
+    pkill -f "$ROOT/bin/serve" 2>/dev/null && echo "stopped" || echo "not running"
+    exit 0
+    ;;
+esac
+
+# Reuse a running instance rather than fighting over the port. The health
+# probe is the source of truth -- a stale pidfile or an odd argv would lie.
+if ! alive; then
+  spawn
+  for _ in $(seq 40); do
+    alive && break
+    sleep 0.1
+  done
+  if ! alive; then
+    echo "omarchy-type: server did not come up on $URL" >&2
+    exit 1
+  fi
+fi
+
+case "${1:-}" in
+  --serve-only|-s) echo "$URL" ;;
+  *) open_url "$URL" ;;
+esac
