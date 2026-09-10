@@ -179,18 +179,23 @@ fewer words per line and rewraps. It does not shrink.
 
 ### Tests
 
-They drive a real headless Chromium over the DevTools protocol, typing with
-genuine key events.
-
 ```bash
-test/width-sweep.js    font size, line ratio, caret alignment, line count
-                       across nine widths
-test/wrap-caret.js     the caret tracks the active word across wrapped
-                       lines and follows a mid-test resize
+test/run                 everything
+test/run width-sweep     just one check
 ```
 
-Both need `chromium` and a `ws` module (`npm i ws`), and expect the server
-already running on 8421.
+They drive a real headless Chromium over the DevTools protocol and type
+with genuine key events. `test/run` starts the app and the browser, runs
+the checks, and cleans up after itself.
+
+**No dependencies** — `test/cdp.js` speaks just enough of the WebSocket
+protocol to talk to Chromium, so the suite runs from a fresh clone with
+nothing installed but node and a chromium.
+
+| | |
+|---|---|
+| `width-sweep.js` | font size, line ratio, caret alignment and line count across nine widths |
+| `wrap-caret.js` | the caret tracks the active word across wrapped lines, and follows a mid-test resize |
 
 ---
 

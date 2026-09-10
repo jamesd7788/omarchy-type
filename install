@@ -44,20 +44,25 @@ case ":$PATH:" in
   *) echo "note: $BIN is not on your PATH -- add it to use 'omarchy-type' directly" ;;
 esac
 
-# The theme hook only means anything on Omarchy. Elsewhere the app runs
-# fine with its built-in palette, so skip it quietly.
-if command -v omarchy >/dev/null 2>&1; then
-  omarchy hook install theme-set "$ROOT/bin/omarchy-type-theme-hook" >/dev/null 2>&1 ||
-    { mkdir -p "$HOOK_DIR"; cp "$ROOT/bin/omarchy-type-theme-hook" "$HOOK"; chmod 755 "$HOOK"; }
-  echo "installed theme-set hook -> live recolouring enabled"
-elif [[ -d "$HOME/.config/omarchy/hooks" ]]; then
-  mkdir -p "$HOOK_DIR"
-  cp "$ROOT/bin/omarchy-type-theme-hook" "$HOOK"
-  chmod 755 "$HOOK"
+# The theme hook only means anything on an Omarchy install -- one that has
+# actually applied a theme. Having the binary on PATH isn't enough, so key
+# off the theme state itself. Elsewhere the app runs fine with its built-in
+# palette, so skip the hook quietly.
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme"
+
+if [[ -e $STATE ]]; then
+  if command -v omarchy >/dev/null 2>&1 &&
+     omarchy hook install theme-set "$ROOT/bin/omarchy-type-theme-hook" >/dev/null 2>&1; then
+    :
+  else
+    mkdir -p "$HOOK_DIR"
+    cp "$ROOT/bin/omarchy-type-theme-hook" "$HOOK"
+    chmod 755 "$HOOK"
+  fi
   echo "installed theme-set hook -> live recolouring enabled"
 else
-  echo "no Omarchy detected -- the app will use its built-in palette"
-  echo "  (point OMARCHY_TYPE_THEME at a colors.toml to theme it anyway)"
+  echo "no Omarchy theme found -- the app will use its built-in palette"
+  echo "  (set OMARCHY_TYPE_THEME to a colors.toml to theme it anyway)"
 fi
 
 echo

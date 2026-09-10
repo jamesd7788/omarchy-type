@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Run the test suite: starts the app and a headless Chromium, runs every
+# check, then cleans both up.
+#
+#   test/run                 run everything
+#   test/run width-sweep     run one check by name
+set -uo pipefail
+
+here() {
+  local src=${BASH_SOURCE[0]} dir
+  while [ -L "$src" ]; do
+    dir=$(cd -P "$(dirname "$src")" && pwd)
+    src=$(readlink "$src")
+    [[ $src != /* ]] && src=$dir/$src
+  done
+  cd -P "$(dirname "$src")" && pwd
+}
+
+TEST=$(here)
+ROOT=$(cd "$TEST/.." && pwd)
+PORT="${OMARCHY_TYPE_PORT:-8421}"
+DEBUG_PORT="${OMARCHY_TYPE_DEBUG_PORT:-9222}"
+URL="http://127.0.0.1:$PORT"
+PROFILE="$TEST/.cache/chromium"
+
+for cmd in node python3; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "test: $cmd is required" >&2; exit 1; }
+done
+
+BROWSER=""
+for c in chromium chromium-browser google-chrome google-chrome-stable brave; do
+  command -v "$c" >/dev/null 2>&1 && { BROWSER=$c; break; }
+done
+[[ -n $BROWSER ]] || { echo "test: no chromium/chrome found on PATH" >&2; exit 1; }
+
+STARTED_SERVER=0
+cleanup() {
+  [[ -n ${BROWSER_PID:-} ]] && kill "$BROWSER_PID" 2>/dev/null
+  (( STARTED_SERVER )) && pkill -f "$ROOT/bin/serve" 2>/dev/null
+  return 0
+}
+trap cleanup EXIT
+
+if ! curl -sf --max-time 1 "$URL/theme" >/dev/null 2>&1; then
+  "$ROOT/bin/serve" >/dev/null 2>&1 </dev/null &
+  STARTED_SERVER=1
+  for _ in $(seq 40); do
+    curl -sf --max-time 1 "$URL/theme" >/dev/null 2>&1 && break
+    sleep 0.1
+  done
+fi
+curl -sf --max-time 1 "$URL/theme" >/dev/null 2>&1 || {
+  echo "test: app did not come up on $URL" >&2; exit 1; }
+
+rm -rf "$PROFILE"
+mkdir -p "$PROFILE"
+"$BROWSER" --headless=new --disable-gpu --no-sandbox \
+  --remote-debugging-port="$DEBUG_PORT" --remote-allow-origins='*' \
+  --user-data-dir="$PROFILE" --window-size=1400,880 \
+  "$URL" >/dev/null 2>&1 </dev/null &
+BROWSER_PID=$!
+
+for _ in $(seq 60); do
+  curl -sf --max-time 1 "http://127.0.0.1:$DEBUG_PORT/json/list" >/dev/null 2>&1 && break
+  sleep 0.25
+done
+sleep 2
+
+if [[ $# -gt 0 ]]; then
+  CHECKS=("$TEST/$1.js")
+else
+  CHECKS=("$TEST/width-sweep.js" "$TEST/wrap-caret.js")
+fi
+
+fails=0
+for check in "${CHECKS[@]}"; do
+  echo "===== $(basename "$check" .js) ====="
+  node "$check" || fails=$((fails + 1))
+  echo
+done
+
+if (( fails )); then
+  echo "$fails check(s) failed"
+  exit 1
+fi
+echo "all checks passed"
