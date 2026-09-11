@@ -91,6 +91,25 @@ omarchy theme set gruvbox
 The font follows `fc-match monospace` — the same source `omarchy font
 current` uses — so the test matches your terminal with no configuration.
 
+### The bundled theme: salt-vault
+
+The `theme` pill in the header pins **salt-vault** — black glass, legal-pad
+acid, warm bone text — the palette my tmux statusline and herdr panes both
+wear. Click it again to go back to following the desktop.
+
+| | |
+|---|---|
+| `#08090b` | the page |
+| `#e8e0cf` | correctly typed |
+| `#68717d` | not yet typed |
+| `#d7ff72` | caret, timer, wpm |
+| `#ff5f57` | mistakes |
+
+Pinning it outranks the desktop: `omarchy theme set` still streams in and is
+remembered, but it won't repaint until you switch back. The choice persists
+in `localStorage` alongside the other settings, and is read before the first
+paint so there's no flash of the wrong palette on load.
+
 ### Off Omarchy
 
 It runs anywhere python3 does. Without Omarchy it simply keeps its built-in
@@ -100,6 +119,33 @@ compatible `colors.toml`:
 ```bash
 OMARCHY_TYPE_THEME=~/my-theme/colors.toml omarchy-type
 ```
+
+---
+
+## Installing it as an app
+
+The page ships a web manifest and a service worker, so any Chromium-based
+browser will offer to install it — it then opens in its own window, with no
+URL bar, and the OS window chrome follows the painted background.
+
+```
+manifest.webmanifest   name, colours, icons
+icon.svg               the brand mark
+sw.js                  precache + offline
+```
+
+Two rules keep the worker from fighting the live-theme design:
+
+- **`/theme` and `/theme/stream` are never cached.** They are live desktop
+  state, and the SSE stream must not be buffered, so both bypass the worker
+  entirely.
+- **Navigations are network-first.** The server deliberately sends
+  `no-store` because the page is edited in place; a cache-first worker would
+  reintroduce exactly the stale-UI bug that header exists to prevent. The
+  cache is the offline fallback, not the fast path.
+
+Offline, the app runs on its precached word list and whichever palette you
+last used. Bump `VERSION` in `sw.js` to retire an old cache.
 
 ---
 
