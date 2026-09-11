@@ -4,7 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>omarchy-type</title>
-<link rel="icon" href="data:,">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#08090b" id="theme-color">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="type">
+<link rel="apple-touch-icon" href="icon.svg">
 <style>
   /* Palette is injected from the live Omarchy theme at runtime; these are
      only the pre-paint defaults so the first frame is never white. */
@@ -413,7 +420,21 @@
 
   @media (max-width: 700px) {
     header, footer { padding: 1rem; flex-wrap: wrap; }
-    #modes { margin-left: 0; width: 100%; justify-content: center; }
+    /* The mode row must stay ONE line. Letting it wrap to a second row makes
+       the header taller, which shortens #wrap -- and the strip then shows
+       fewer lines than scrollLines() assumes, stranding the caret above the
+       window. Scroll the pills sideways instead of growing the header. */
+    #modes {
+      margin-left: 0;
+      width: 100%;
+      justify-content: flex-start;
+      gap: .7rem;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    #modes::-webkit-scrollbar { display: none; }
+    #modes > .mode { flex: none; }
     main { padding: 0 1rem; }
     /* Do NOT set #words font-size here -- --word-size already scales, and
        overriding it alone would desync --line-h and break the caret. */
@@ -436,6 +457,8 @@
     <button class="mode" id="master" title="any mistake ends the test">master</button>
     <div class="sep"></div>
     <button class="mode" id="caret-style" title="caret style">caret</button>
+    <div class="sep"></div>
+    <button class="mode" id="theme-src" title="palette">theme</button>
   </div>
 </header>
 
@@ -488,6 +511,38 @@ const FALLBACK = {
   muted: "#646669", accent: "#e2b714", red: "#ca4754", theme: "default",
 };
 
+/* salt-vault -- the palette shared by my tmux statusline and herdr panes.
+   Black glass, legal-pad acid, warm bone text. Keyed exactly the way Omarchy
+   hands us colors.toml, so it flows through applyTheme() untouched. */
+const SALT_VAULT = {
+  mode: "dark",
+  background: "#08090b",          // @salt_vault_bg
+  lighter_background: "#12151b",  // @salt_vault_surface -- raised pills
+  selection: "#181c24",           // @salt_vault_surface_alt
+  foreground: "#e8e0cf",          // @salt_vault_fg
+  bright_foreground: "#e8e0cf",
+  muted: "#68717d",               // @salt_vault_dim -- untyped words
+  accent: "#d7ff72",              // @salt_vault_acid -- caret, active mode
+  red: "#ff5f57",                 // @salt_vault_red
+  theme: "salt-vault",
+};
+
+/* Which palette to paint: "desktop" follows the live Omarchy theme,
+   "salt-vault" pins the bundled one. Persisted with the other settings. */
+let themeSource = "desktop";
+let desktopTheme = null;  // last payload the server sent us
+
+function paintTheme() {
+  applyTheme(themeSource === "salt-vault" ? SALT_VAULT : (desktopTheme || FALLBACK));
+}
+
+function setThemeSource(src) {
+  themeSource = src === "salt-vault" ? "salt-vault" : "desktop";
+  paintTheme();
+  paintModes();
+  save();
+}
+
 /** Blend two #rrggbb colors. t=0 -> a, t=1 -> b. */
 function mix(a, b, t) {
   const p = (h) => {
@@ -530,6 +585,10 @@ function applyTheme(c) {
   // Let the browser paint form controls/scrollbars to match.
   document.documentElement.style.colorScheme = light ? "light" : "dark";
 
+  // Installed, the page is the whole window -- keep the OS chrome in step.
+  const tc = document.getElementById("theme-color");
+  if (tc) tc.setAttribute("content", bg);
+
   applyFont(c.font);
 }
 
@@ -566,14 +625,20 @@ function applyFont(name) {
 async function initTheme() {
   try {
     const r = await fetch("/theme", { cache: "no-store" });
-    if (r.ok) applyTheme(await r.json());
-  } catch { /* served over file:// -- defaults are fine */ }
+    if (r.ok) desktopTheme = await r.json();
+  } catch { /* file:// or installed offline -- defaults are fine */ }
+  paintTheme();
 
   // Live push: the theme-set.d hook nudges the server, which fans out here.
+  // We always record the new desktop colors, but only repaint when the user
+  // hasn't pinned salt-vault -- a pinned palette outranks the desktop.
   try {
     const es = new EventSource("/theme/stream");
     es.onmessage = (e) => {
-      try { applyTheme(JSON.parse(e.data)); } catch {}
+      try {
+        desktopTheme = JSON.parse(e.data);
+        if (themeSource === "desktop") paintTheme();
+      } catch {}
     };
   } catch {}
 }
@@ -1172,7 +1237,7 @@ function again() {
 function save() {
   try {
     localStorage.setItem("omarchy-type",
-      JSON.stringify({ mode, limit, master, caret, zen }));
+      JSON.stringify({ mode, limit, master, caret, zen, themeSource }));
   } catch {}
 }
 
@@ -1184,6 +1249,16 @@ function paintModes() {
   const m = document.getElementById("master");
   m.setAttribute("aria-pressed", String(master));
   document.body.classList.toggle("master", master);
+
+  const t = document.getElementById("theme-src");
+  if (t) {
+    const pinned = themeSource === "salt-vault";
+    t.textContent = pinned ? "salt-vault" : "theme";
+    t.setAttribute("aria-pressed", String(pinned));
+    t.title = pinned
+      ? "salt-vault (click to follow the desktop theme)"
+      : "following the desktop theme (click for salt-vault)";
+  }
 
   const c = document.getElementById("caret-style");
   c.textContent = CARETS[caret].label;
@@ -1241,7 +1316,22 @@ document.getElementById("caret-style").addEventListener("click", () => {
   paintModes();
   save();
 });
+// Swap palette without disturbing a run in progress.
+document.getElementById("theme-src").addEventListener("click", () => {
+  setThemeSource(themeSource === "salt-vault" ? "desktop" : "salt-vault");
+});
+
 document.getElementById("again").addEventListener("click", again);
+
+/* Service worker -- installability and offline use. Registered only over
+   http(s); from a file:// URL the API is unavailable and throws. */
+function registerSW() {
+  if (!("serviceWorker" in navigator)) return;
+  if (location.protocol !== "http:" && location.protocol !== "https:") return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js", { scope: "./" }).catch(() => {});
+  });
+}
 
 // Re-measure the caret when the line box changes underneath it.
 /* Re-measure and re-place after a resize. --word-size scales with the
@@ -1283,7 +1373,15 @@ window.addEventListener("resize", () => {
  * ------------------------------------------------------------------ */
 
 (async function main() {
+  // Read the stored palette first: initTheme() paints, and we don't want a
+  // flash of the desktop theme before a pinned salt-vault takes over.
+  try {
+    const pre = JSON.parse(localStorage.getItem("omarchy-type") || "null");
+    if (pre && pre.themeSource === "salt-vault") themeSource = "salt-vault";
+  } catch {}
+
   initTheme();
+  registerSW();
   await loadWords();
 
   try {
